@@ -1,0 +1,237 @@
+---
+title: "Feature Engineering"
+output: html_document
+date: "2025-04-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(TTR)
+library(zoo)
+library(tidyverse)
+library(scales)
+library(ggplot2)
+library(moments)
+library(tidymodels)
+library(randomForest)
+library(slider)
+```
+
+
+```{r}
+prices <- read.csv("clean_prices.csv")
+fundamentals <- read.csv("merged_fundamentals_data.csv")
+```
+
+```{r}
+prices_features <- prices %>%
+  group_by(Ticker) %>%
+  arrange(Date) %>%
+
+  # Daily and 5-day returns
+  mutate(
+    Return_1d = (Close.Price / lag(Close.Price)) - 1,
+    Return_5d = (Close.Price / lag(Close.Price, 5)) - 1
+  ) %>%
+
+  # Volatility (20-day rolling std of daily return)
+  mutate(
+    Volatility_20d = rollapply(Return_1d, 20, sd, fill = NA, align = "right")
+  ) %>%
+
+  # Price / SMA ratio
+  mutate(
+    Price_SMA50_Ratio = Close.Price / SMA_50,
+    Price_SMA200_Ratio = Close.Price / SMA_200
+  ) %>%
+
+  # SMA crossover
+  mutate(
+    SMA_Cross = as.integer(SMA_50 > SMA_200)
+  ) %>%
+
+  # MACD: EMA 12 - EMA 26
+  mutate(
+    EMA12 = EMA(Close.Price, n = 12),
+    EMA26 = EMA(Close.Price, n = 26),
+    MACD = EMA12 - EMA26
+  ) %>%
+
+  # Volume z-score (standardized over 20-day window)
+  mutate(
+    Volume_Mean = rollmean(Volume, 20, fill = NA, align = "right"),
+    Volume_SD = rollapply(Volume, 20, sd, fill = NA, align = "right"),
+    Volume_ZScore = (Volume - Volume_Mean) / Volume_SD
+  ) %>%
+  
+  ungroup()
+```
+
+Create features
+
+```{r}
+prices_features <- prices_features %>%
+  group_by(Ticker) %>%
+  arrange(Date) %>%
+  mutate(UpTomorrow = as.integer(lead(Close.Price) > Close.Price)) %>%
+  ungroup()
+```
+
+
+
+```{r}
+model_data <- prices_features %>%
+  select(UpTomorrow, RSI, SMA_50, SMA_200, MACD, Volatility_20d, Volume_ZScore, Price_SMA50_Ratio, SMA_Cross) %>%
+  drop_na() %>% 
+  mutate(UpTomorrow = factor(UpTomorrow, levels = c(0, 1)))
+
+# Optional: sample for quick training
+model_data_sample <- slice_sample(model_data, n = 100000)
+```
+
+
+```{r}
+# Train/test split by random sampling
+set.seed(42)
+split <- initial_split(model_data_sample, prop = 0.8, strata = UpTomorrow)
+train_data <- training(split)
+test_data  <- testing(split)
+```
+
+```{r}
+# Define model
+log_model <- logistic_reg() %>%
+  set_engine("glm")
+
+# Fit the model
+log_fit <- log_model %>%
+  fit(UpTomorrow ~ ., data = train_data)
+
+# Predict and evaluate
+log_preds <- predict(log_fit, test_data, type = "class") %>%
+  bind_cols(test_data)
+
+# Accuracy
+log_acc <- accuracy(log_preds, truth = UpTomorrow, estimate = .pred_class)
+log_acc
+
+```
+
+```{r}
+rf_fit <- randomForest(UpTomorrow ~ ., data = train_data, ntree = 100, importance = TRUE)
+rf_preds <- predict(rf_fit, test_data)
+mean(rf_preds == test_data$UpTomorrow)  # Accuracy
+```
+
+1 day returns are completely unpredictable
+
+```{r}
+# Plot feature importance
+pdf("rf_variable_importance.pdf", width = 8, height = 6)
+varImpPlot(rf_fit, type = 1)
+dev.off()
+```
+
+Create more features
+
+RSI crossover
+
+```{r}
+prices_features <- prices_features %>%
+  group_by(Ticker) %>%
+  arrange(Date) %>%
+  mutate(
+    RSI_Below30 = RSI < 30,
+    
+    # Rolling window: was RSI < 30 in last 5 days (excluding today)?
+    RSI_Below30_Last5 = slide_lgl(RSI_Below30, 
+                                  .f = ~ any(.x), 
+                                  .before = 5, .after = -1, .complete = TRUE),
+    
+    # Flag a valid "cross below 30" signal
+    RSI_CrossBelow30_Fresh = as.integer(RSI_Below30 & !lag(RSI_Below30) & !RSI_Below30_Last5)
+  ) %>%
+  ungroup()
+```
+
+SMA initial crossover
+
+```{r}
+prices_features <- prices_features %>%
+  group_by(Ticker) %>%
+  arrange(Date) %>%
+  mutate(
+    prev_sma_diff = lag(SMA_50 - SMA_200),
+    sma_diff = SMA_50 - SMA_200,
+    
+    SMA_GoldenCross = as.integer(prev_sma_diff < 0 & sma_diff >= 0),
+    SMA_DeathCross  = as.integer(prev_sma_diff > 0 & sma_diff <= 0)
+  ) %>%
+  ungroup()
+```
+
+```{r}
+prices_features %>%
+  filter(Ticker == "GM") %>%
+  summarise(
+    Golden_Crosses = sum(SMA_GoldenCross, na.rm = TRUE),
+    Death_Crosses  = sum(SMA_DeathCross, na.rm = TRUE)
+  )
+```
+
+SMA days since last cross
+
+```{r}
+prices_features <- prices_features %>%
+  group_by(Ticker) %>%
+  arrange(Date) %>%
+  
+  # Build event counters
+  mutate(
+    Golden_Event_ID = cumsum(replace_na(SMA_GoldenCross, 0) == 1),
+    Death_Event_ID  = cumsum(replace_na(SMA_DeathCross, 0) == 1)
+  ) %>%
+
+  # Count days since each event
+  group_by(Ticker, Golden_Event_ID) %>%
+  mutate(Days_Since_GoldenCross = row_number() - 1) %>%
+  group_by(Ticker, Death_Event_ID) %>%
+  mutate(Days_Since_DeathCross = row_number() - 1) %>%
+  ungroup() %>%
+
+  # Mask values before first event with NA
+  group_by(Ticker) %>%
+  mutate(
+    First_Golden_Index = match(1, SMA_GoldenCross),
+    First_Death_Index  = match(1, SMA_DeathCross),
+    
+    Days_Since_GoldenCross = if_else(row_number() < First_Golden_Index, NA_integer_, Days_Since_GoldenCross),
+    Days_Since_DeathCross  = if_else(row_number() < First_Death_Index, NA_integer_, Days_Since_DeathCross)
+  ) %>%
+  ungroup() %>%
+  select(-First_Golden_Index, -First_Death_Index)  # cleanup
+```
+
+MACD Signal
+
+```{r}
+prices_features <- prices_features %>%
+  group_by(Ticker) %>%
+  arrange(Date) %>%
+  mutate(
+    MACD_Signal = EMA(MACD, n = 9),
+    MACD_CrossUp   = as.integer(MACD > MACD_Signal & lag(MACD) <= lag(MACD_Signal)),
+    MACD_CrossDown = as.integer(MACD < MACD_Signal & lag(MACD) >= lag(MACD_Signal))
+  ) %>%
+  ungroup()
+```
+
+```{r}
+write.csv(prices_features, file = "prices_features.csv", row.names = FALSE)
+```
+
+

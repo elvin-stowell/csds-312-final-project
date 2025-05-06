@@ -1,0 +1,214 @@
+---
+title: "Financials_Modeling"
+output: html_document
+date: "2025-04-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(TTR)
+library(zoo)
+library(tidyverse)
+library(scales)
+library(ggplot2)
+library(moments)
+library(tidymodels)
+library(randomForest)
+library(slider)
+library(doParallel)
+library(future)
+library(future.apply)
+library(furrr)
+library(progressr)
+library(readr)
+library(janitor)
+library(yardstick)
+library(xgboost)
+```
+
+```{r}
+df1 <- readRDS("model_data_50d_noNA.rds")
+fundamentals <- read.csv("merged_fundamentals_data.csv")
+```
+
+
+```{r}
+names(fundamentals)
+```
+
+```{r}
+fundamentals <- fundamentals %>% 
+  clean_names()
+```
+
+```{r}
+summary(fundamentals)
+```
+
+
+
+```{r}
+# market cap is the same for all rows so I only want the most recent row
+market_cap_modeling <- fundamentals %>%
+  group_by(ticker) %>%
+  slice_max(order_by = start_date, n = 1) %>%
+  ungroup() %>% 
+  drop_na()
+```
+
+```{r}
+summary(market_cap_modeling)
+```
+
+
+```{r}
+saveRDS(market_cap_modeling, "market_cap_fundamentals.rds")
+```
+
+
+```{r}
+
+```
+
+
+After modeling for market cap...
+plot actual vs. predicted market cap
+
+```{r}
+xgb_marketCap_preds <- readRDS("~/PROJECT/Financials_Analysis/predict_market_cap/xgb/xgb_fundamentals_market_cap_predictions.rds")
+```
+
+```{r}
+xgb_marketCap_actual_vs_predicted <- ggplot(xgb_marketCap_preds, aes(x = market_cap, y = .pred)) +
+  geom_point(alpha = 0.5, color = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, color = "gray40", linetype = "dashed") +
+  # scale_x_continuous(limits = c(0, 1e11)) +
+  # scale_y_continuous(limits = c(0, 1e11)) +
+  scale_x_log10(limits = c(5e8, 2e12), labels = scales::label_number(scale_cut = cut_short_scale())) +
+  scale_y_log10(limits = c(5e8, 2e12), labels = scales::label_number(scale_cut = cut_short_scale())) +
+  labs(
+    title = "XGB Actual vs. Predicted Market Capitalization",
+    x = "Actual Market Cap",
+    y = "Predicted Market Cap"
+  ) +
+  geom_smooth(method = "loess", se = FALSE, color = "darkorange", linetype = "solid") +
+  theme_light()
+
+ggsave("~/PROJECT/Financials_Analysis/Charts/xgb_marketCap_actual_vs_predicted.png", plot = xgb_marketCap_actual_vs_predicted, width = 8, height = 6, dpi = 300)
+```
+
+Market Cap RSQ xgb
+
+```{r}
+metrics(xgb_marketCap_preds, truth = market_cap, estimate = .pred)
+```
+
+```{r}
+xgb_model <- readRDS("~/PROJECT/Financials_Analysis/predict_market_cap/xgb/xgb_fundamentals_market_cap_model.rds")
+```
+
+```{r}
+# Extract importance (assumes model was trained with feature names)
+xgb_booster <- extract_fit_parsnip(xgb_model)$fit
+importance_matrix <- xgb.importance(model = xgb_booster)
+
+xgb_market_cap_importance <- importance_matrix %>%
+  top_n(8, wt = Gain) %>%
+  ggplot(aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "XGB Market Cap Model — Most Important Features",
+    x = "Feature",
+    y = "Gain"
+  ) +
+  theme_light()
+
+ggsave("~/PROJECT/Financials_Analysis/Charts/xgb_importance.png", plot = xgb_market_cap_importance, width = 8, height = 6, dpi = 300)
+```
+
+
+
+linreg
+
+```{r}
+metrics(lm_preds, truth = market_cap, estimate = .pred)
+```
+
+```{r}
+
+```
+
+
+kNN
+
+```{r}
+knn_marketCap_preds <- readRDS("~/PROJECT/Financials_Analysis/predict_market_cap/knn/knn_market_cap_predictions.rds")
+```
+
+```{r}
+knn_marketCap_actual_vs_predicted <- ggplot(knn_marketCap_preds, aes(x = market_cap, y = .pred)) +
+  geom_point(alpha = 0.5, color = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, color = "gray40", linetype = "dashed") +
+  # scale_x_continuous(limits = c(0, 1e11)) +
+  # scale_y_continuous(limits = c(0, 1e11)) +
+  scale_x_log10(limits = c(5e8, 2e12), labels = scales::label_number(scale_cut = cut_short_scale())) +
+  scale_y_log10(limits = c(5e8, 2e12), labels = scales::label_number(scale_cut = cut_short_scale())) +
+  labs(
+    title = "kNN Actual vs. Predicted Market Capitalization",
+    x = "Actual Market Cap",
+    y = "Predicted Market Cap"
+  ) +
+  geom_smooth(method = "loess", se = FALSE, color = "darkorange", linetype = "solid") +
+  theme_light()
+
+ggsave("~/PROJECT/Financials_Analysis/Charts/knn_marketCap_actual_vs_predicted.png", plot = knn_marketCap_actual_vs_predicted, width = 8, height = 6, dpi = 300)
+```
+
+
+```{r}
+metrics(knn_marketCap_preds, truth = market_cap, estimate = .pred)
+```
+
+```{r}
+lm_fit <- readRDS("~/PROJECT/Financials_Analysis/predict_market_cap/linreg/lm_fundamentals_market_cap_model.rds")
+tidy(lm_fit)
+```
+```{r}
+# --- Coefficient table with t-statistics ---
+coef_table <- broom::tidy(lm_fit) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    direction = if_else(statistic > 0, "Positive", "Negative"),
+    abs_statistic = abs(statistic)
+  ) %>%
+  arrange(abs_statistic) %>%
+  mutate(term = factor(term, levels = unique(term))) %>% 
+  drop_na()
+```
+
+
+```{r}
+# plot feature significance
+lm_importance_plot <- ggplot(coef_table, aes(x = abs_statistic, y = term, fill = direction)) +
+  geom_col() +
+  scale_fill_manual(values = c("Positive" = "steelblue", "Negative" = "firebrick")) +
+  labs(
+    title = "Linear Market Cap Model – Feature Importance by |t-Statistic|",
+    x = "Absolute t-Statistic",
+    y = "Feature",
+    fill = "Direction"
+  ) +
+  theme_light()
+
+ggsave(
+  "~/PROJECT/Financials_Analysis/Charts/lm_importance_market_cap.png",
+  plot = lm_importance_plot,
+  width = 8, height = 6, dpi = 300
+)
+```
+
