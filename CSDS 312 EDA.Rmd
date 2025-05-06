@@ -1,0 +1,507 @@
+---
+title: "CSDS 312 EDA"
+author: "Elvin Stowell"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(moments)
+library(TTR)
+library(caret)
+```
+
+
+```{r}
+prices <- read.csv("/Users/elvin/Desktop/CSDS 312 Project/Data/merged_price_data.csv")
+fundamentals <- read.csv("/Users/elvin/Desktop/CSDS 312 Project/Data/merged_fundamentals_data.csv")
+```
+
+
+
+```{r}
+prices$Date <- NULL
+colnames(prices)[colnames(prices) == "Date.1"] <- "Date"
+prices$Date <- as.Date(prices$Date)
+
+# prices <- prices %>%
+#   group_by(Ticker, Date) %>%
+#   slice(1) %>%
+#   ungroup()
+```
+
+```{r}
+# Remove duplicates, keeping only the first occurrence
+prices <- prices %>%
+  arrange(Ticker, Date) %>%  # Ensure it's sorted properly
+  distinct(Ticker, Date, .keep_all = TRUE)
+
+# Check if duplicates are removed
+print(sum(duplicated(prices[, c("Ticker", "Date")])))  # Should return 0
+
+```
+
+
+```{r}
+# Identify tickers that appear throughout the data
+valid_tickers <- prices %>%
+  filter(Date %in% c("2020-03-03", "2025-02-28")) %>%  # Keep only the two dates
+  group_by(Ticker) %>%
+  filter(n() == 2) %>%  # Keep only tickers appearing on both dates
+  pull(Ticker)  # Extract tickers as a vector
+
+
+# Removing 2020-03-02 since for some reason many of the tickers were missing data for this date
+prices5yr <- prices %>%
+  filter(Ticker %in% valid_tickers, Date != "2020-03-02")
+```
+
+Calculate percent change
+
+```{r}
+# Step 1: Identify the Close Price on 2020-03-03 for each Ticker
+baseline_prices <- prices5yr %>%
+  filter(Date == "2020-03-03") %>%
+  select(Ticker, Close.Price) %>%
+  rename(Baseline.Close = Close.Price)  # Rename column for clarity
+
+baseline_prices %>%
+  count(Ticker) %>%
+  filter(n > 1)
+
+baseline_prices <- baseline_prices %>%
+  group_by(Ticker) %>%
+  slice(1) %>%
+  ungroup()
+
+# Step 2: Merge the baseline price with the main dataset
+prices5yr <- prices5yr %>%
+  left_join(baseline_prices, by = "Ticker") %>% 
+ # Join based on Ticker
+  mutate(Pct.Chg.Baseline = ((Close.Price - Baseline.Close) / Baseline.Close) * 100) %>% 
+  # add daily percent change
+  group_by(Ticker) %>%  # Ensure calculation is done per stock
+  mutate(Pct.Chg.Daily = ((Close.Price / lag(Close.Price)) - 1) * 100) %>%  # Percent change formula
+  select(Date, Ticker, Close.Price, Volume, Pct.Chg.Daily, Pct.Chg.Baseline, 
+         Open.Price, High.Price, Low.Price, Volume.Weighted.Price, 
+         Number.of.Trades, Baseline.Close)
+
+
+# %>%  # Calculate percent change
+#   mutate(Percent_Change = ifelse(Date == "2020-03-03", 0, Percent_Change))  # Ensure 2020-03-03 is 0
+
+# Step 3: Check the first few rows
+```
+
+
+```{r}
+summary_stats <- prices5yr %>%
+  ungroup() %>% 
+  summarise(
+    Mean = mean(Pct.Chg.Daily, na.rm = TRUE),
+    Median = median(Pct.Chg.Daily, na.rm = TRUE),
+    SD = sd(Pct.Chg.Daily, na.rm = TRUE),
+    Min = min(Pct.Chg.Daily, na.rm = TRUE),
+    Q1 = quantile(Pct.Chg.Daily, 0.25, na.rm = TRUE),
+    Q3 = quantile(Pct.Chg.Daily, 0.75, na.rm = TRUE),
+    Max = max(Pct.Chg.Daily, na.rm = TRUE),
+    Skewness = skewness(Pct.Chg.Daily, na.rm = TRUE),
+    Kurtosis = kurtosis(Pct.Chg.Daily, na.rm = TRUE)
+  )
+
+print(summary_stats)
+```
+
+
+```{r}
+hist_percent_change <- ggplot(prices5yr, aes(x = Pct.Chg.Daily)) +
+  geom_histogram(aes(y = ..density..), bins = 100, fill = "steelblue3", color = "black") +
+  scale_x_continuous(limits = c(-5, 5)) +
+  labs(title = "Distribution of Daily Percent Change",
+       x = "Daily Percent Change (%)",
+       y = "Density") +
+  theme_minimal()
+
+hist_percent_change
+
+ggsave("/Users/elvin/Desktop/CSDS 312 Project/Charts/EDA/daily_percent_change_histogram.png", plot = hist_percent_change, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+# Calculate summary statistics for Volume
+summary_stats_volume <- prices5yr %>%
+  ungroup() %>% 
+  summarise(
+    Mean = mean(Volume, na.rm = TRUE),
+    Median = median(Volume, na.rm = TRUE),
+    SD = sd(Volume, na.rm = TRUE),
+    Min = min(Volume, na.rm = TRUE),
+    Max = max(Volume, na.rm = TRUE),
+    Q1 = quantile(Volume, 0.25, na.rm = TRUE),
+    Q3 = quantile(Volume, 0.75, na.rm = TRUE),
+    Skewness = skewness(Volume, na.rm = TRUE),
+    Kurtosis = kurtosis(Volume, na.rm = TRUE)
+  )
+
+print(summary_stats_volume)
+```
+
+
+```{r}
+# Plot histogram with normal distribution fit for Volume
+daily_volume_histogram_zoomed_out <- ggplot(prices5yr, aes(x = Volume)) +
+  geom_histogram(aes(y = ..density..), bins = 100, fill = "steelblue3", color = "black", alpha = 0.7) +
+  scale_x_continuous(limits = c(0, 10000000)) +
+  labs(title = "Distribution of Daily Volume - Zoomed Out",
+       x = "Volume",
+       y = "Density") +
+  theme_minimal()
+
+daily_volume_histogram_zoomed_out
+
+ggsave("/Users/elvin/Desktop/CSDS 312 Project/Charts/EDA/daily_volume_histogram_zoomed_out.png", plot = daily_volume_histogram_zoomed_out, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+# Plot histogram with normal distribution fit for Volume
+daily_volume_histogram_zoomed_in <- ggplot(prices5yr, aes(x = Volume)) +
+  geom_histogram(aes(y = ..density..), bins = 100, fill = "steelblue3", color = "black", alpha = 0.7) +
+  scale_x_continuous(limits = c(0, 1000000)) +
+  labs(title = "Distribution of Daily Volume - Zoomed In",
+       x = "Volume",
+       y = "Density") +
+  theme_minimal()
+
+daily_volume_histogram_zoomed_in
+
+ggsave("/Users/elvin/Desktop/CSDS 312 Project/Charts/EDA/daily_volume_histogram_zoomed_in.png", plot = daily_volume_histogram_zoomed_in, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+ggplot(data = prices5yr %>% 
+         filter(Ticker == "BHVN"),
+       mapping = aes(x = Date, y = Close.Price)) +
+  geom_line(color = "steelblue") + 
+  theme_minimal()
+```
+
+
+
+```{r}
+ggplot(data = prices5yr %>% 
+         filter(Ticker == "NIO"),
+       mapping = aes(x = Date, y = Volume.Weighted.Price)) +
+  geom_line()
+```
+
+```{r}
+prices5yr$RSI <- RSI(prices5yr$Close.Price, n = 14)
+
+prices5yr <- prices5yr %>%
+  group_by(Ticker) %>%
+  arrange(Date) %>%
+  mutate(SMA_50 = SMA(Close.Price, n = 50)) %>% 
+  mutate(SMA_200 = SMA(Close.Price, n = 200)) %>% 
+  ungroup()
+```
+
+
+```{r}
+ggplot(data = prices5yr %>% 
+         filter(Ticker == c("AVDL"), Date > "2022-06-01", Date < "2022-08-12"),
+       mapping = aes(x = Date, y = Pct.Chg.Baseline, color = Ticker)) +
+  geom_line(size = 1) +
+  theme_minimal()
+```
+
+
+```{r}
+prices5yr %>% 
+  filter(Ticker == "AVDL") %>% 
+  ggplot(aes(x = Date, y = RSI)) +
+    geom_line(color = "dodgerblue") +
+    geom_hline(yintercept = 70, linetype = "dashed", color = "red") +   # Overbought level
+    geom_hline(yintercept = 30, linetype = "dashed", color = "green") + # Oversold level
+    labs(title = "RSI Indicator for ___", x = "Date", y = "RSI") +
+    theme_minimal()
+```
+
+```{r}
+prices5yr %>% 
+  filter(Ticker == "VVR") %>% 
+  ggplot(aes(x = Date)) +
+    geom_line(aes(y = Volume.Weighted.Price, color = "Volume Weighted Price")) +  
+    geom_line(aes(y = SMA_50, color = "SMA 50")) +  
+    geom_line(aes(y = SMA_200, color = "SMA 200")) +  
+    labs(title = "SMA Indicator for ____", x = "Date", y = "Price") +  
+    theme_minimal() +
+    theme(legend.position = "bottom")  # Move legend to the bottom
+```
+
+```{r}
+ggplot(data = prices5yr %>% 
+         filter(Ticker == "VVR"),
+       mapping = aes(x = Date, y = Volume)) +
+  geom_line()
+```
+```{r}
+summary(prices5yr)
+```
+
+
+Calculate change in price for a given ticker x days after RSI drops below 30
+
+```{r}
+time_period = 30
+ticker = "BLMN"
+
+# Ensure data is arranged by Date for correct lead() operation
+prices5yr <- prices5yr %>% arrange(Ticker, Date)
+
+# Step 1: Identify the first day RSI drops below 30 after being above 30
+rsi_below_30_singleticker <- prices5yr %>% 
+  filter(Ticker == ticker) %>%
+  arrange(Date) %>% 
+  mutate(RSI_Lag = dplyr::lag(RSI)) %>%  # Get previous day's RSI
+  filter(RSI < 30 & RSI_Lag >= 30) %>%  # Only take first drop below 30
+  select(Date, Volume.Weighted.Price)
+
+# Step 2: Find the Future Price 21 trading days later
+future_prices <- prices5yr %>% 
+  filter(Ticker == ticker) %>%
+  arrange(Date) %>%
+  mutate(Future_Price = dplyr::lead(Volume.Weighted.Price, time_period)) %>%
+  select(Date, Future_Price)  # Only keep relevant columns
+
+# Step 3: Left join the future prices back to the RSI dataframe
+rsi_below_30_singleticker <- rsi_below_30_singleticker %>%
+  left_join(future_prices, by = "Date")
+
+
+# Step 5: Compute the percentage change (handle NA values)
+rsi_below_30_singleticker <- rsi_below_30_singleticker %>%
+  mutate(
+    Percent_Change = ifelse(!is.na(Future_Price) & !is.na(Volume.Weighted.Price),
+                            ((Future_Price - Volume.Weighted.Price) / Volume.Weighted.Price) * 100,
+                            NA)
+  ) %>% 
+  rename(Current_Price = Volume.Weighted.Price)
+
+# Step 6: Compute the average percentage change
+avg_percent_change <- mean(rsi_below_30_singleticker$Percent_Change, na.rm = TRUE)
+
+# Print the result
+print(avg_percent_change)
+
+```
+
+For all tickers
+
+```{r}
+time_period = 40
+
+# Ensure data is sorted for correct lead() function application
+prices5yr <- prices5yr %>% arrange(Ticker, Date)
+
+# Step 1: Identify when RSI drops below 30 after being above 30 for each ticker
+rsi_below_30_alltickers <- prices5yr %>%
+  filter(Date > "2020-05-01" & Volume > 1000000) %>% 
+  group_by(Ticker) %>%
+  arrange(Date) %>%
+  mutate(RSI_Lag = dplyr::lag(RSI)) %>%  # Get previous day's RSI
+  filter(RSI < 30 & RSI_Lag >= 30) %>%  # First drop below 30
+  select(Ticker, Date, Volume.Weighted.Price)
+
+# Step 2: Find Future Price 21 Trading Days Later
+future_prices <- prices5yr %>%
+  group_by(Ticker) %>%
+  arrange(Date) %>%
+  mutate(Future_Price = dplyr::lead(Volume.Weighted.Price, time_period)) %>%
+  select(Ticker, Date, Future_Price)
+
+# Step 3: Join Future Prices to RSI Drop Events
+rsi_below_30_alltickers <- rsi_below_30_alltickers %>%
+  left_join(future_prices, by = c("Ticker", "Date"))
+
+# Step 4: Compute Percentage Change
+rsi_below_30_alltickers <- rsi_below_30_alltickers %>%
+  mutate(
+    Percent_Change = ifelse(!is.na(Future_Price) & !is.na(Volume.Weighted.Price),
+                            ((Future_Price - Volume.Weighted.Price) / Volume.Weighted.Price) * 100,
+                            NA)
+  )
+
+# Step 5: Compute Overall Average Percent Change Across All Tickers
+avg_percent_change_all_tickers <- mean(rsi_below_30_alltickers$Percent_Change, na.rm = TRUE)
+
+# Print the result
+print(avg_percent_change_all_tickers)
+```
+
+
+```{r}
+summary_stats <- rsi_below_30_alltickers %>%
+  ungroup() %>% 
+  summarise(
+    Mean = mean(Percent_Change, na.rm = TRUE),
+    Median = median(Percent_Change, na.rm = TRUE),
+    SD = sd(Percent_Change, na.rm = TRUE),
+    Min = min(Percent_Change, na.rm = TRUE),
+    Q1 = quantile(Percent_Change, 0.25, na.rm = TRUE),
+    Q3 = quantile(Percent_Change, 0.75, na.rm = TRUE),
+    Max = max(Percent_Change, na.rm = TRUE),
+    Skewness = skewness(Percent_Change, na.rm = TRUE),
+    Kurtosis = kurtosis(Percent_Change, na.rm = TRUE)
+  )
+
+print(summary_stats)
+
+ggplot(rsi_below_30_alltickers, aes(x = Percent_Change)) +
+  geom_histogram(bins = 100, fill = "dodgerblue", color = "black") +
+  scale_x_continuous(limits = c(-50, 100)) +
+  labs(title = "Distribution of ",
+       x = "Daily Percent Change (%)",
+       y = "Frequency") +
+  theme_minimal()
+```
+
+Average x day gain specific tickers
+
+```{r}
+# Ensure data is sorted properly
+prices5yr <- prices5yr %>% arrange(Ticker, Date)
+
+# Filter for Amazon (AMZN) and compute 60-day future price
+prices_amzn <- prices5yr %>%
+  filter(Ticker == "AMZN") %>%
+  arrange(Date) %>%
+  mutate(Future_Price = dplyr::lead(Volume.Weighted.Price, 60))  # Move 60 trading days ahead
+
+# Calculate percentage gain over 60 days
+prices_amzn <- prices_amzn %>%
+  mutate(
+    Percent_Change_60d = ifelse(!is.na(Future_Price) & !is.na(Volume.Weighted.Price),
+                                ((Future_Price - Volume.Weighted.Price) / Volume.Weighted.Price) * 100,
+                                NA)
+  )
+
+# Compute the average 60-day gain for AMZN
+avg_60d_gain_amzn <- mean(prices_amzn$Percent_Change_60d, na.rm = TRUE)
+
+# Print the result
+print(avg_60d_gain_amzn)
+```
+
+Average x day gain all tickers
+
+```{r}
+# Ensure data is sorted for correct lead() application
+prices5yr <- prices5yr %>% arrange(Ticker, Date)
+
+# Step 1: Compute 60-day future price for each ticker
+prices_with_future <- prices5yr %>%
+  filter(Date > "2020-05-01" & Volume > 1000000) %>% 
+  group_by(Ticker) %>%
+  arrange(Date) %>%
+  mutate(Future_Price = dplyr::lead(Volume.Weighted.Price, 60)) %>%
+  ungroup()
+
+# Step 2: Compute 60-day percentage change
+prices_with_future <- prices_with_future %>%
+  mutate(
+    Percent_Change_60d = ifelse(!is.na(Future_Price) & !is.na(Volume.Weighted.Price),
+                                ((Future_Price - Volume.Weighted.Price) / Volume.Weighted.Price) * 100,
+                                NA)
+  )
+
+# Step 3: Compute the overall average 60-day gain across all tickers
+avg_60d_gain_all_tickers <- mean(prices_with_future$Percent_Change_60d, na.rm = TRUE)
+
+# Print the result
+print(avg_60d_gain_all_tickers)
+```
+
+```{r}
+summary_stats <- prices_with_future %>%
+  ungroup() %>% 
+  summarise(
+    Mean = mean(Percent_Change_60d, na.rm = TRUE),
+    Median = median(Percent_Change_60d, na.rm = TRUE),
+    SD = sd(Percent_Change_60d, na.rm = TRUE),
+    Min = min(Percent_Change_60d, na.rm = TRUE),
+    Q1 = quantile(Percent_Change_60d, 0.25, na.rm = TRUE),
+    Q3 = quantile(Percent_Change_60d, 0.75, na.rm = TRUE),
+    Max = max(Percent_Change_60d, na.rm = TRUE),
+    Skewness = skewness(Percent_Change_60d, na.rm = TRUE),
+    Kurtosis = kurtosis(Percent_Change_60d, na.rm = TRUE)
+  )
+
+print(summary_stats)
+
+ggplot(prices_with_future, aes(x = Percent_Change_60d)) +
+  geom_histogram(bins = 100, fill = "dodgerblue", color = "black") +
+  scale_x_continuous(limits = c(-100, 1000)) +
+  labs(title = "Distribution of Daily Percent Change (Filtered for Outliers)",
+       x = "Daily Percent Change (%)",
+       y = "Frequency") +
+  theme_minimal()
+```
+
+```{r}
+write.csv(prices5yr, "/Users/elvin/Desktop/CSDS 312 Project/Data/clean_prices.csv", row.names = FALSE)
+```
+
+
+
+
+```{r}
+test <- prices5yr %>% 
+  filter(Pct.Chg.Daily == 0)
+
+prices5yr %>%
+  filter(Ticker == "AAPL", Date %in% as.Date(c("2020-06-30", "2020-07-01", "2020-07-02", "2020-07-06"))) %>%
+  select(Date, Close.Price)
+```
+
+```{r}
+# Step 1: Calculate average daily change across all tickers
+avg_change <- prices5yr %>%
+  group_by(Date) %>%
+  summarise(avg_pct_change = mean(Pct.Chg.Baseline, na.rm = TRUE), .groups = "drop")
+```
+
+
+```{r}
+# Step 2: Plot the average line
+p <- ggplot(avg_change, aes(x = Date, y = avg_pct_change)) +
+  geom_line(color = "gray30", size = 0.7, alpha = 0.3) +
+  labs(title = "Average % Change Across All Stocks",
+       y = "% Change", x = "Date") +
+  theme_minimal()
+
+p
+
+ggsave("/Users/elvin/Desktop/CSDS 312 Project/Charts/EDA/overall_average_change.png", plot = p, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+individual_tickers <- prices5yr %>%
+  filter(Ticker %in% c("AAPL", "GM", "AMZN"))  # add tickers of interest
+
+p2 <- p + geom_line(data = individual_tickers,
+              aes(x = Date, y = Pct.Chg.Baseline, color = Ticker),
+              alpha = 1) +
+  labs(title = "% Change for Select Stocks")
+
+p2
+
+ggsave("/Users/elvin/Desktop/CSDS 312 Project/Charts/EDA/change_for_select_stocks.png", plot = p2, width = 8, height = 6, dpi = 300)
+```
+

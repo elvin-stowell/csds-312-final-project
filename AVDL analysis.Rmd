@@ -1,0 +1,82 @@
+---
+title: "AVDL Analysis"
+author: "Elvin Stowell"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+```
+
+```{r}
+# Filter to AVDL and date range
+baseline_date <- as.Date("2022-06-01")
+end_date <- as.Date("2022-08-12")
+
+avdl_data <- prices %>%
+  filter(Ticker == "AVDL", Date >= baseline_date, Date <= end_date) %>%
+  arrange(Date)
+
+baseline_price <- avdl_data$Close.Price[avdl_data$Date == baseline_date]
+
+# Convert 1.56% change to price
+model_prediction_date <- as.Date("2022-08-12")
+model_pct_change <- 156
+model_price <- baseline_price * (1 + model_pct_change / 100)
+
+# Plot with dual y-axes and model prediction dot
+AVDL <- ggplot(avdl_data, aes(x = Date, y = Close.Price)) +
+  geom_line(color = "steelblue", size = 1) +
+  geom_point(aes(x = model_prediction_date, y = model_price), color = "firebrick3", size = 3) +
+  geom_text(aes(x = model_prediction_date, y = model_price, label = "model prediction"), 
+            vjust = 3, hjust = 0.65, color = "firebrick3", size = 2.8) +
+  scale_y_continuous(
+    name = "Close Price ($)",
+    sec.axis = sec_axis(
+      trans = ~ 100 * (. - baseline_price) / baseline_price,
+      name = "Percent Change from 2022-06-01 (%)"
+    )
+  ) +
+  labs(
+    title = "AVDL Price (with % Change from 2022-06-01)",
+    x = "Date"
+  ) +
+  theme_minimal()
+
+ggsave("/Users/elvin/Desktop/AVDL_50day_performance.png", plot = AVDL, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+# Convert 1.56% change to price
+start_date <- as.Date("2022-06-01")
+end_date <- as.Date("2022-08-12")
+
+AVDL2 <- ggplot(data = prices5yr %>% 
+         filter(Ticker == "AVDL", Date > "2021-06-01", Date < "2023-08-12"),
+       mapping = aes(x = Date, y = Close.Price)) +
+  geom_line(color = "steelblue") + 
+  geom_vline(xintercept = start_date, linetype = "dashed", color = "green3") +
+  geom_vline(xintercept = end_date, linetype = "dashed", color = "red3") +
+  annotate("text", x = start_date, y = Inf, label = "Start Date", vjust = 2, color = "green3", angle = 90) +
+  annotate("text", x = end_date, y = Inf, label = "End Date", vjust = 2, color = "red3", angle = 90) +
+    labs(
+    title = "AVDL Price",
+    x = "Date",
+    y = "Close Price ($)"
+  ) +
+  theme_minimal()
+
+ggsave("/Users/elvin/Desktop/AVDL_price_chart.png", plot = AVDL2, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+AVDL <- prices
+```
+
