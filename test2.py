@@ -1,6 +1,6 @@
 import requests
 
-API_KEY = "U7HWXx__jVzv4pz7p_wQKavhoXMoNshK"
+API_KEY = "API_KEY"
 ticker = "GM"
 
 url = f"https://api.polygon.io/vX/reference/financials?ticker={ticker}&apiKey={API_KEY}"
