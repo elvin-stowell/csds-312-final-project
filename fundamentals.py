@@ -2,7 +2,7 @@ import pandas as pd
 import requests
 
 # Your Polygon.io API key
-API_KEY = "U7HWXx__jVzv4pz7p_wQKavhoXMoNshK"
+API_KEY = "API_KEY"
 
 # Function to fetch fundamental data for a given ticker
 def fetch_fundamentals_data(ticker):
