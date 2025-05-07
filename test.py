@@ -2,7 +2,7 @@ import pandas as pd
 import requests
 
 # Input your Polygon.io API key here
-API_KEY = "U7HWXx__jVzv4pz7p_wQKavhoXMoNshK"
+API_KEY = "API_KEY"
 
 # Function to fetch historical data for a given ticker
 def fetch_historical_stock_data(ticker, start_date, end_date):
